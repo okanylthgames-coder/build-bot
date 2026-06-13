@@ -11,6 +11,21 @@ import os
 import json
 from datetime import datetime
 from typing import Optional
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+class HealthCheck(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, *args):
+        pass
+
+def run_server():
+    HTTPServer(("0.0.0.0", 8080), HealthCheck).serve_forever()
+
+threading.Thread(target=run_server, daemon=True).start()
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
