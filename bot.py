@@ -1,6 +1,6 @@
 """
-Discord Build Bot
-Enregistre et retrouve des builds de jeu vidéo par classe et aspect.
+Discord Build Bot — Allods Online
+Enregistre et retrouve des builds par classe et contenu.
 """
 
 import discord
@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+
+# ─── Serveur HTTP pour Render ─────────────────────────────────────────────────
 
 class HealthCheck(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -32,6 +34,10 @@ threading.Thread(target=run_server, daemon=True).start()
 TOKEN = os.getenv("DISCORD_TOKEN", "YOUR_TOKEN_HERE")
 DB_PATH = "builds.db"
 
+CLASSES = ["Psi", "Cleric", "Warden", "Summy", "Demon", "Bard", "Engi", "War", "Pally", "Scout", "Mage"]
+ASPECTS = ["Assault", "Heal", "Tank", "Support"]
+CONTENUS = ["PvE", "PvP"]
+
 # ─── Base de données ──────────────────────────────────────────────────────────
 
 def init_db():
@@ -45,9 +51,9 @@ def init_db():
             author_name TEXT    NOT NULL,
             classe      TEXT    NOT NULL,
             aspect      TEXT    NOT NULL,
-            titre       TEXT    NOT NULL,
+            contenu     TEXT    NOT NULL,
             description TEXT,
-            liens       TEXT    NOT NULL DEFAULT '[]',  -- JSON array
+            liens       TEXT    NOT NULL DEFAULT '[]',
             patch       TEXT,
             obsolete    INTEGER NOT NULL DEFAULT 0,
             created_at  TEXT    NOT NULL
@@ -69,49 +75,55 @@ def get_db():
     con.row_factory = sqlite3.Row
     return con
 
+# ─── Autocomplétion ──────────────────────────────────────────────────────────
+
+async def autocomplete_classe(interaction: discord.Interaction, current: str):
+    return [
+        app_commands.Choice(name=c, value=c)
+        for c in CLASSES if current.lower() in c.lower()
+    ]
+
+async def autocomplete_aspect(interaction: discord.Interaction, current: str):
+    return [
+        app_commands.Choice(name=a, value=a)
+        for a in ASPECTS if current.lower() in a.lower()
+    ]
+
+async def autocomplete_contenu(interaction: discord.Interaction, current: str):
+    return [
+        app_commands.Choice(name=c, value=c)
+        for c in CONTENUS if current.lower() in c.lower()
+    ]
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def build_embed(row, vote_count: int = 0) -> discord.Embed:
-    """Transforme une ligne DB en Embed Discord."""
-    color = discord.Color.orange() if not row["obsolete"] else discord.Color.greys()[3]
-    
-    title = f"{'⚠️ [OBSOLÈTE] ' if row['obsolete'] else ''}**{row['titre']}**"
+    color = discord.Color.orange() if not row["obsolete"] else discord.Color.dark_gray()
+
+    title = f"{'⚠️ [OBSOLÈTE] ' if row['obsolete'] else ''}{row['contenu']} · {row['classe']} · {row['aspect']}"
     embed = discord.Embed(
         title=title,
         description=row["description"] or "*Aucune description.*",
         color=color,
         timestamp=datetime.fromisoformat(row["created_at"])
     )
-    embed.add_field(name="🧙 Classe",  value=row["classe"].capitalize(), inline=True)
-    embed.add_field(name="✨ Aspect",  value=row["aspect"].capitalize(), inline=True)
+    embed.add_field(name="🧙 Classe",   value=row["classe"],   inline=True)
+    embed.add_field(name="⚔️ Aspect",   value=row["aspect"],   inline=True)
+    embed.add_field(name="🎯 Contenu",  value=row["contenu"],  inline=True)
     if row["patch"]:
         embed.add_field(name="📅 Patch", value=row["patch"], inline=True)
-    embed.add_field(name="⭐ Votes",   value=str(vote_count), inline=True)
+    embed.add_field(name="⭐ Votes", value=str(vote_count), inline=True)
 
     liens = json.loads(row["liens"])
     if liens:
         liens_str = "\n".join(f"[Lien {i+1}]({l})" for i, l in enumerate(liens))
         embed.add_field(name="🔗 Liens / Images", value=liens_str, inline=False)
-        # Affiche la première image en aperçu si c'est une URL d'image
         first = liens[0]
         if any(first.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
             embed.set_image(url=first)
 
     embed.set_footer(text=f"Build #{row['id']} · Ajouté par {row['author_name']}")
     return embed
-
-
-def autocomplete_from_column(column: str):
-    """Génère une fonction d'autocomplétion depuis les valeurs distinctes d'une colonne."""
-    async def autocomplete(interaction: discord.Interaction, current: str):
-        con = get_db()
-        rows = con.execute(
-            f"SELECT DISTINCT {column} FROM builds WHERE guild_id = ? AND {column} LIKE ? LIMIT 10",
-            (str(interaction.guild_id), f"%{current}%")
-        ).fetchall()
-        con.close()
-        return [app_commands.Choice(name=r[0].capitalize(), value=r[0]) for r in rows]
-    return autocomplete
 
 # ─── Bot setup ───────────────────────────────────────────────────────────────
 
@@ -129,32 +141,43 @@ async def on_ready():
 
 @tree.command(name="build-add", description="Enregistre un nouveau build.")
 @app_commands.describe(
-    classe      = "Classe du personnage (ex: Sorcier, Barbare…)",
-    aspect      = "Aspect / archétype du build (ex: Feu, Tanky, DoT…)",
-    titre       = "Nom court du build",
+    classe      = "Classe du personnage",
+    aspect      = "Rôle du build",
+    contenu     = "Type de contenu visé",
     description = "Description et explications du build",
     liens       = "Liens ou URLs d'images séparés par des espaces",
-    patch       = "Version / saison du jeu (ex: S4, 2.1.0)",
+    patch       = "Version du jeu (ex: 13.1)",
 )
+@app_commands.autocomplete(classe=autocomplete_classe, aspect=autocomplete_aspect, contenu=autocomplete_contenu)
 async def build_add(
     interaction: discord.Interaction,
     classe: str,
     aspect: str,
-    titre: str,
+    contenu: str,
     description: Optional[str] = None,
     liens: Optional[str] = None,
     patch: Optional[str] = None,
 ):
+    if classe not in CLASSES:
+        await interaction.response.send_message(f"❌ Classe invalide. Choisis parmi : {', '.join(CLASSES)}", ephemeral=True)
+        return
+    if aspect not in ASPECTS:
+        await interaction.response.send_message(f"❌ Aspect invalide. Choisis parmi : {', '.join(ASPECTS)}", ephemeral=True)
+        return
+    if contenu not in CONTENUS:
+        await interaction.response.send_message(f"❌ Contenu invalide. Choisis parmi : {', '.join(CONTENUS)}", ephemeral=True)
+        return
+
     liens_list = liens.split() if liens else []
     con = get_db()
     cur = con.execute(
-        """INSERT INTO builds (guild_id, author_id, author_name, classe, aspect, titre, description, liens, patch, created_at)
+        """INSERT INTO builds (guild_id, author_id, author_name, classe, aspect, contenu, description, liens, patch, created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (
             str(interaction.guild_id),
             str(interaction.user.id),
             str(interaction.user.display_name),
-            classe.lower(), aspect.lower(), titre,
+            classe, aspect, contenu,
             description,
             json.dumps(liens_list),
             patch,
@@ -167,38 +190,44 @@ async def build_add(
 
     embed = discord.Embed(
         title="✅ Build enregistré !",
-        description=f"**{titre}** ajouté avec l'ID `#{build_id}`.",
+        description=f"Build **#{build_id}** ajouté avec succès.",
         color=discord.Color.green()
     )
-    embed.add_field(name="Classe", value=classe.capitalize(), inline=True)
-    embed.add_field(name="Aspect", value=aspect.capitalize(), inline=True)
+    embed.add_field(name="🧙 Classe",  value=classe,   inline=True)
+    embed.add_field(name="⚔️ Aspect",  value=aspect,   inline=True)
+    embed.add_field(name="🎯 Contenu", value=contenu,  inline=True)
     await interaction.response.send_message(embed=embed)
 
 # ─── /build-get ──────────────────────────────────────────────────────────────
 
-@tree.command(name="build-get", description="Recherche des builds par classe et/ou aspect.")
+@tree.command(name="build-get", description="Recherche des builds par classe, aspect et/ou contenu.")
 @app_commands.describe(
-    classe = "Filtrer par classe",
-    aspect = "Filtrer par aspect",
+    classe  = "Filtrer par classe",
+    aspect  = "Filtrer par aspect",
+    contenu = "Filtrer par contenu (PvE ou PvP)",
 )
-@app_commands.autocomplete(classe=autocomplete_from_column("classe"), aspect=autocomplete_from_column("aspect"))
+@app_commands.autocomplete(classe=autocomplete_classe, aspect=autocomplete_aspect, contenu=autocomplete_contenu)
 async def build_get(
     interaction: discord.Interaction,
     classe: Optional[str] = None,
     aspect: Optional[str] = None,
+    contenu: Optional[str] = None,
 ):
-    if not classe and not aspect:
-        await interaction.response.send_message("❌ Précise au moins une classe ou un aspect.", ephemeral=True)
+    if not classe and not aspect and not contenu:
+        await interaction.response.send_message("❌ Précise au moins un critère de recherche.", ephemeral=True)
         return
 
     query = "SELECT b.*, (SELECT COUNT(*) FROM votes v WHERE v.build_id = b.id) as votes FROM builds b WHERE b.guild_id = ?"
     params = [str(interaction.guild_id)]
     if classe:
-        query += " AND b.classe LIKE ?"
-        params.append(f"%{classe.lower()}%")
+        query += " AND b.classe = ?"
+        params.append(classe)
     if aspect:
-        query += " AND b.aspect LIKE ?"
-        params.append(f"%{aspect.lower()}%")
+        query += " AND b.aspect = ?"
+        params.append(aspect)
+    if contenu:
+        query += " AND b.contenu = ?"
+        params.append(contenu)
     query += " ORDER BY votes DESC, b.created_at DESC LIMIT 5"
 
     con = get_db()
@@ -206,11 +235,7 @@ async def build_get(
     con.close()
 
     if not rows:
-        await interaction.response.send_message(
-            f"😕 Aucun build trouvé pour {'classe **' + classe + '**' if classe else ''}"
-            f"{' + ' if classe and aspect else ''}{'aspect **' + aspect + '**' if aspect else ''}.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("😕 Aucun build trouvé pour ces critères.", ephemeral=True)
         return
 
     await interaction.response.send_message(
@@ -220,11 +245,11 @@ async def build_get(
 
 # ─── /build-list ─────────────────────────────────────────────────────────────
 
-@tree.command(name="build-list", description="Liste toutes les classes et aspects disponibles.")
+@tree.command(name="build-list", description="Liste tous les builds disponibles par classe.")
 async def build_list(interaction: discord.Interaction):
     con = get_db()
     rows = con.execute(
-        "SELECT classe, aspect, COUNT(*) as nb FROM builds WHERE guild_id = ? GROUP BY classe, aspect ORDER BY classe, aspect",
+        "SELECT classe, contenu, COUNT(*) as nb FROM builds WHERE guild_id = ? GROUP BY classe, contenu ORDER BY classe, contenu",
         (str(interaction.guild_id),)
     ).fetchall()
     con.close()
@@ -233,17 +258,23 @@ async def build_list(interaction: discord.Interaction):
         await interaction.response.send_message("📭 Aucun build enregistré pour l'instant.", ephemeral=True)
         return
 
-    # Regrouper par classe
-    by_class: dict[str, list[str]] = {}
+    by_class: dict[str, dict[str, int]] = {}
     for r in rows:
-        by_class.setdefault(r["classe"].capitalize(), []).append(
-            f"`{r['aspect'].capitalize()}` ({r['nb']})"
-        )
+        by_class.setdefault(r["classe"], {})[r["contenu"]] = r["nb"]
 
-    embed = discord.Embed(title="📚 Builds disponibles", color=discord.Color.blurple())
-    for classe, aspects in by_class.items():
-        embed.add_field(name=f"🧙 {classe}", value=" · ".join(aspects), inline=False)
-    embed.set_footer(text=f"Total : {sum(r['nb'] for r in rows)} builds")
+    embed = discord.Embed(title="📚 Builds Allods Online", color=discord.Color.blurple())
+    for classe in CLASSES:
+        if classe in by_class:
+            parts = []
+            for contenu in CONTENUS:
+                nb = by_class[classe].get(contenu, 0)
+                if nb:
+                    parts.append(f"`{contenu}` : {nb}")
+            if parts:
+                embed.add_field(name=f"🧙 {classe}", value=" · ".join(parts), inline=False)
+
+    total = sum(r["nb"] for r in rows)
+    embed.set_footer(text=f"Total : {total} builds")
     await interaction.response.send_message(embed=embed)
 
 # ─── /build-top ──────────────────────────────────────────────────────────────
@@ -287,11 +318,11 @@ async def build_vote(interaction: discord.Interaction, build_id: int):
     if existing:
         con.execute("DELETE FROM votes WHERE build_id = ? AND user_id = ?",
                     (build_id, str(interaction.user.id)))
-        msg = f"⭐ Vote retiré du build **{row['titre']}**."
+        msg = f"⭐ Vote retiré du build **#{build_id}**."
     else:
         con.execute("INSERT INTO votes (build_id, user_id) VALUES (?,?)",
                     (build_id, str(interaction.user.id)))
-        msg = f"⭐ Vote ajouté au build **{row['titre']}** !"
+        msg = f"⭐ Vote ajouté au build **#{build_id}** !"
     con.commit()
     con.close()
     await interaction.response.send_message(msg, ephemeral=True)
@@ -318,7 +349,7 @@ async def build_delete(interaction: discord.Interaction, build_id: int):
     con.execute("DELETE FROM builds WHERE id = ?", (build_id,))
     con.commit()
     con.close()
-    await interaction.response.send_message(f"🗑️ Build **#{build_id} — {row['titre']}** supprimé.", ephemeral=True)
+    await interaction.response.send_message(f"🗑️ Build **#{build_id}** supprimé.", ephemeral=True)
 
 # ─── /build-obsolete ─────────────────────────────────────────────────────────
 
