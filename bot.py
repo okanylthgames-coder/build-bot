@@ -54,6 +54,20 @@ CLASSE_ASPECTS = {
 
 CLASSES = list(CLASSE_ASPECTS.keys())
 
+CLASSE_EMOJIS = {
+    "Cleric": "<:Cleric:1515702932094451773>",
+    "Summy":  "<:Summy:1515701932868505680>",
+    "Warden": "<:Warden:1515701969929637909>",
+    "Scout":  "<:Scout:1515701914791186574>",
+    "Psi":    "<:Psi:1515701895069700268>",
+    "Pally":  "<:Pally:1515701874958012496>",
+    "War":    "<:War:1515701951868702720>",
+    "Mage":   "<:Mage:1515701858948091915>",
+    "Engi":   "<:Engi:1515701821786820730>",
+    "Bard":   "<:Bard:1515701718845751367>",
+    "Demon":  "<:Demon:1515701796260151378>",
+}
+
 # ─── Base de données ──────────────────────────────────────────────────────────
 
 def init_db():
@@ -130,6 +144,7 @@ def build_dashboard_embed(guild_id: str) -> discord.Embed:
 
     total = 0
     for classe in CLASSES:
+        emoji = CLASSE_EMOJIS.get(classe, "🧙")
         lines = []
         for aspect in CLASSE_ASPECTS[classe]:
             pve = data.get(classe, {}).get(aspect, {}).get("PvE", 0)
@@ -142,7 +157,7 @@ def build_dashboard_embed(guild_id: str) -> discord.Embed:
                 lines.append(f"**{aspect}** — " + " ".join(parts))
             else:
                 lines.append(f"**{aspect}** — *aucun build*")
-        embed.add_field(name=f"🧙 {classe}", value="\n".join(lines), inline=True)
+        embed.add_field(name=f"{emoji} {classe}", value="\n".join(lines), inline=True)
 
     embed.set_footer(text=f"Total : {total} builds actifs · Mis à jour")
     return embed
