@@ -36,20 +36,20 @@ DB_PATH     = "builds.db"
 DELETE_DELAY = 180  # 3 minutes
 
 CONTENUS = ["PvE", "PvP"]
-ASPECTS  = ["Assault", "Heal", "Tank", "Support"]
+ASPECTS  = ["DPS", "Heal", "Tank", "Support"]
 
 CLASSE_ASPECTS = {
-    "Cleric":  ["Assault", "Heal", "Support"],
-    "War":     ["Assault", "Tank"],
-    "Pally":   ["Assault", "Tank"],
-    "Warden":  ["Assault", "Heal", "Support"],
-    "Summy":   ["Assault", "Heal", "Support"],
-    "Demon":   ["Assault", "Tank"],
-    "Engi":    ["Assault", "Support"],
-    "Bard":    ["Assault", "Support"],
-    "Mage":    ["Assault", "Support"],
-    "Scout":   ["Assault", "Tank"],
-    "Psi":     ["Assault", "Support"],
+    "Cleric":  ["DPS", "Heal", "Support"],
+    "War":     ["DPS", "Tank"],
+    "Pally":   ["DPS", "Tank"],
+    "Warden":  ["DPS", "Heal", "Support"],
+    "Summy":   ["DPS", "Heal", "Support"],
+    "Demon":   ["DPS", "Tank"],
+    "Engi":    ["DPS", "Support"],
+    "Bard":    ["DPS", "Support"],
+    "Mage":    ["DPS", "Support"],
+    "Scout":   ["DPS", "Tank"],
+    "Psi":     ["DPS", "Support"],
 }
 
 CLASSES = list(CLASSE_ASPECTS.keys())
@@ -97,9 +97,11 @@ def get_db():
     con.row_factory = sqlite3.Row
     return con
 
-def make_id(classe, aspect, contenu, author_name):
+def make_id(nom, classe, aspect, author_name):
     date = datetime.utcnow().strftime("%Y-%m-%d")
-    base = f"{classe}_{aspect}_{contenu}_{author_name}_{date}"
+    # Nettoie le nom pour l'ID (espaces → tirets, caractères spéciaux retirés)
+    nom_clean = "".join(c if c.isalnum() or c in "-_" else "-" for c in nom).strip("-")
+    base = f"{nom_clean}_{classe}_{aspect}_{author_name}_{date}"
     con = get_db()
     existing = con.execute("SELECT id FROM builds WHERE id LIKE ?", (f"{base}%",)).fetchall()
     con.close()
@@ -200,7 +202,7 @@ async def autocomplete_build_sans_images(interaction: discord.Interaction, curre
     con = get_db()
     rows = con.execute(query, params).fetchall()
     con.close()
-    return [app_commands.Choice(name=f"{r['nom']} ({r['id']})", value=r["id"]) for r in rows]
+    return [app_commands.Choice(name=r["nom"], value=r["id"]) for r in rows]
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -273,7 +275,7 @@ async def build_add(
         await interaction.response.send_message("❌ Contenu invalide.", ephemeral=True)
         return
 
-    build_id = make_id(classe, aspect, contenu, interaction.user.display_name)
+    build_id = make_id(nom, classe, aspect, interaction.user.display_name)
     con = get_db()
     con.execute(
         """INSERT INTO builds (id, guild_id, author_id, author_name, nom, classe, aspect, contenu, description, images, patch, created_at)
@@ -403,6 +405,7 @@ async def build_get(
         "rubis3":       "💎 Rubis 3",
         "statistiques": "📊 Statistiques",
     }
+
     for r in rows:
         images = json.loads(r["images"])
         if images:
