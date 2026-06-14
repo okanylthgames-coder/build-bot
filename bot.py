@@ -32,13 +32,29 @@ threading.Thread(target=run_server, daemon=True).start()
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-TOKEN = os.getenv("DISCORD_TOKEN", "YOUR_TOKEN_HERE")
-DB_PATH = "builds.db"
-DELETE_DELAY = 300  # 5 minutes en secondes
+TOKEN    = os.getenv("DISCORD_TOKEN", "YOUR_TOKEN_HERE")
+DB_PATH  = "builds.db"
+DELETE_DELAY = 180  # 3 minutes
 
-CLASSES  = ["Psi", "Cleric", "Warden", "Summy", "Demon", "Bard", "Engi", "War", "Pally", "Scout", "Mage"]
-ASPECTS  = ["Assault", "Heal", "Tank", "Support"]
 CONTENUS = ["PvE", "PvP"]
+ASPECTS  = ["Assault", "Heal", "Tank", "Support"]
+
+# Aspects disponibles par classe
+CLASSE_ASPECTS = {
+    "Cleric":     ["Assault", "Heal", "Support"],
+    "War":        ["Assault", "Tank"],
+    "Pally":      ["Assault", "Tank"],
+    "Warden":     ["Assault", "Heal", "Support"],
+    "Summy":      ["Assault", "Heal", "Support"],
+    "Demon":      ["Assault", "Tank"],
+    "Engi":       ["Assault", "Support"],
+    "Bard":       ["Assault", "Support"],
+    "Mage":       ["Assault", "Support"],
+    "Scout":      ["Assault", "Tank"],
+    "Psi":        ["Assault", "Support"],
+}
+
+CLASSES = list(CLASSE_ASPECTS.keys())
 
 # ─── Base de données ──────────────────────────────────────────────────────────
 
@@ -67,6 +83,13 @@ def init_db():
             PRIMARY KEY (build_id, user_id),
             FOREIGN KEY (build_id) REFERENCES builds(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS dashboard (
+            guild_id    TEXT    NOT NULL,
+            channel_id  TEXT    NOT NULL,
+            message_id  TEXT    NOT NULL,
+            PRIMARY KEY (guild_id)
+        );
     """)
     con.commit()
     con.close()
@@ -78,25 +101,88 @@ def get_db():
     return con
 
 
-def make_id(classe: str, aspect: str, contenu: str, author_name: str) -> str:
-    """Génère un ID lisible unique."""
+def make_id(classe, aspect, contenu, author_name):
     date = datetime.utcnow().strftime("%Y-%m-%d")
     base = f"{classe}_{aspect}_{contenu}_{author_name}_{date}"
-    # Si l'ID existe déjà, ajoute un suffixe numérique
     con = get_db()
     existing = con.execute("SELECT id FROM builds WHERE id LIKE ?", (f"{base}%",)).fetchall()
     con.close()
-    if not existing:
-        return base
-    return f"{base}_{len(existing) + 1}"
+    return base if not existing else f"{base}_{len(existing)+1}"
+
+# ─── Dashboard ───────────────────────────────────────────────────────────────
+
+def build_dashboard_embed(guild_id: str) -> discord.Embed:
+    con = get_db()
+    rows = con.execute(
+        "SELECT classe, aspect, contenu, COUNT(*) as nb FROM builds WHERE guild_id = ? AND obsolete = 0 GROUP BY classe, aspect, contenu",
+        (guild_id,)
+    ).fetchall()
+    con.close()
+
+    # Organise les données : {classe: {aspect: {contenu: nb}}}
+    data: dict = {}
+    for r in rows:
+        data.setdefault(r["classe"], {}).setdefault(r["aspect"], {})[r["contenu"]] = r["nb"]
+
+    embed = discord.Embed(
+        title="📚 Bibliothèque de Builds — Allods Online",
+        description="Nombre de builds disponibles par classe, aspect et contenu.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+
+    total = 0
+    for classe in CLASSES:
+        aspects_dispo = CLASSE_ASPECTS[classe]
+        lines = []
+        for aspect in aspects_dispo:
+            pve = data.get(classe, {}).get(aspect, {}).get("PvE", 0)
+            pvp = data.get(classe, {}).get(aspect, {}).get("PvP", 0)
+            if pve or pvp:
+                parts = []
+                if pve: parts.append(f"`PvE:{pve}`")
+                if pvp: parts.append(f"`PvP:{pvp}`")
+                lines.append(f"**{aspect}** — " + " ".join(parts))
+                total += pve + pvp
+            else:
+                lines.append(f"**{aspect}** — *aucun build*")
+
+        embed.add_field(
+            name=f"🧙 {classe}",
+            value="\n".join(lines),
+            inline=True
+        )
+
+    embed.set_footer(text=f"Total : {total} builds actifs · Mis à jour")
+    return embed
+
+
+async def update_dashboard(bot: commands.Bot, guild_id: str):
+    """Met à jour le message dashboard si il existe."""
+    con = get_db()
+    row = con.execute("SELECT * FROM dashboard WHERE guild_id = ?", (guild_id,)).fetchone()
+    con.close()
+    if not row:
+        return
+    try:
+        channel = bot.get_channel(int(row["channel_id"]))
+        if not channel:
+            return
+        message = await channel.fetch_message(int(row["message_id"]))
+        await message.edit(embed=build_dashboard_embed(guild_id))
+    except Exception as e:
+        print(f"Dashboard update error: {e}")
 
 # ─── Autocomplétion ──────────────────────────────────────────────────────────
 
 async def autocomplete_classe(interaction: discord.Interaction, current: str):
     return [app_commands.Choice(name=c, value=c) for c in CLASSES if current.lower() in c.lower()]
 
-async def autocomplete_aspect(interaction: discord.Interaction, current: str):
-    return [app_commands.Choice(name=a, value=a) for a in ASPECTS if current.lower() in a.lower()]
+async def autocomplete_aspect_for_class(interaction: discord.Interaction, current: str):
+    # Récupère la classe déjà choisie dans la commande en cours
+    classe = interaction.namespace.classe
+    aspects = CLASSE_ASPECTS.get(classe, ASPECTS)
+    return [app_commands.Choice(name=a, value=a) for a in aspects if current.lower() in a.lower()]
 
 async def autocomplete_contenu(interaction: discord.Interaction, current: str):
     return [app_commands.Choice(name=c, value=c) for c in CONTENUS if current.lower() in c.lower()]
@@ -115,8 +201,8 @@ async def autocomplete_build_id(interaction: discord.Interaction, current: str):
 def build_embed(row, vote_count: int = 0) -> discord.Embed:
     color = discord.Color.orange() if not row["obsolete"] else discord.Color.dark_gray()
     title = f"{'⚠️ [OBSOLÈTE] ' if row['obsolete'] else ''}{row['contenu']} · {row['classe']} · {row['aspect']}"
-    embed = discord.Embed(title=title, description=row["description"] or "*Aucune description.*", color=color,
-                          timestamp=datetime.fromisoformat(row["created_at"]))
+    embed = discord.Embed(title=title, description=row["description"] or "*Aucune description.*",
+                          color=color, timestamp=datetime.fromisoformat(row["created_at"]))
     embed.add_field(name="🧙 Classe",  value=row["classe"],  inline=True)
     embed.add_field(name="⚔️ Aspect",  value=row["aspect"],  inline=True)
     embed.add_field(name="🎯 Contenu", value=row["contenu"], inline=True)
@@ -127,31 +213,19 @@ def build_embed(row, vote_count: int = 0) -> discord.Embed:
     return embed
 
 
-async def send_and_delete(interaction: discord.Interaction, embeds: list, images: list, ephemeral_info: bool = False):
-    """Envoie l'embed + images, puis supprime tout après DELETE_DELAY secondes."""
-    # L'embed principal est éphémère si demandé, sinon public
-    await interaction.response.send_message(embeds=embeds, ephemeral=ephemeral_info)
-    sent_messages = []
+async def ephemeral_with_images(interaction: discord.Interaction, content: str, embeds: list, images: list):
+    """Envoie une réponse éphémère + images éphémères, supprime après DELETE_DELAY."""
+    await interaction.response.send_message(content=content, embeds=embeds, ephemeral=True)
+    for url in images:
+        await interaction.followup.send(url, ephemeral=True)
 
-    # Envoie les images en messages séparés dans le même salon
-    if images and not ephemeral_info:
-        for url in images:
-            msg = await interaction.channel.send(url)
-            sent_messages.append(msg)
-
-    # Suppression après 5 minutes
-    if not ephemeral_info:
+    async def cleanup():
         await asyncio.sleep(DELETE_DELAY)
         try:
-            original = await interaction.original_response()
-            await original.delete()
+            await (await interaction.original_response()).delete()
         except Exception:
             pass
-        for msg in sent_messages:
-            try:
-                await msg.delete()
-            except Exception:
-                pass
+    asyncio.create_task(cleanup())
 
 # ─── Bot setup ───────────────────────────────────────────────────────────────
 
@@ -170,13 +244,13 @@ async def on_ready():
 @tree.command(name="build-add", description="Enregistre un nouveau build.")
 @app_commands.describe(
     classe      = "Classe du personnage",
-    aspect      = "Rôle du build",
-    contenu     = "Type de contenu visé (PvE ou PvP)",
+    aspect      = "Rôle du build (filtré selon la classe choisie)",
+    contenu     = "Type de contenu (PvE ou PvP)",
     description = "Description et explications du build",
-    liens       = "Liens ou URLs d'images séparés par des espaces",
+    liens       = "URLs d'images séparées par des espaces",
     patch       = "Version du jeu (ex: 13.1)",
 )
-@app_commands.autocomplete(classe=autocomplete_classe, aspect=autocomplete_aspect, contenu=autocomplete_contenu)
+@app_commands.autocomplete(classe=autocomplete_classe, aspect=autocomplete_aspect_for_class, contenu=autocomplete_contenu)
 async def build_add(
     interaction: discord.Interaction,
     classe: str, aspect: str, contenu: str,
@@ -185,13 +259,14 @@ async def build_add(
     patch: Optional[str] = None,
 ):
     if classe not in CLASSES:
-        await interaction.response.send_message(f"❌ Classe invalide.", ephemeral=True)
+        await interaction.response.send_message("❌ Classe invalide.", ephemeral=True)
         return
-    if aspect not in ASPECTS:
-        await interaction.response.send_message(f"❌ Aspect invalide.", ephemeral=True)
+    if aspect not in CLASSE_ASPECTS.get(classe, []):
+        await interaction.response.send_message(
+            f"❌ Aspect invalide pour {classe}. Aspects disponibles : {', '.join(CLASSE_ASPECTS[classe])}", ephemeral=True)
         return
     if contenu not in CONTENUS:
-        await interaction.response.send_message(f"❌ Contenu invalide.", ephemeral=True)
+        await interaction.response.send_message("❌ Contenu invalide.", ephemeral=True)
         return
 
     liens_list = liens.split() if liens else []
@@ -213,17 +288,23 @@ async def build_add(
     embed.add_field(name="🧙 Classe",  value=classe,   inline=True)
     embed.add_field(name="⚔️ Aspect",  value=aspect,   inline=True)
     embed.add_field(name="🎯 Contenu", value=contenu,  inline=True)
+
     await interaction.response.send_message(embed=embed, ephemeral=True)
+    await update_dashboard(bot, str(interaction.guild_id))
+
+    async def cleanup():
+        await asyncio.sleep(DELETE_DELAY)
+        try:
+            await (await interaction.original_response()).delete()
+        except Exception:
+            pass
+    asyncio.create_task(cleanup())
 
 # ─── /build-get ──────────────────────────────────────────────────────────────
 
 @tree.command(name="build-get", description="Recherche des builds par classe, aspect et/ou contenu.")
-@app_commands.describe(
-    classe  = "Filtrer par classe",
-    aspect  = "Filtrer par aspect",
-    contenu = "Filtrer par contenu (PvE ou PvP)",
-)
-@app_commands.autocomplete(classe=autocomplete_classe, aspect=autocomplete_aspect, contenu=autocomplete_contenu)
+@app_commands.describe(classe="Filtrer par classe", aspect="Filtrer par aspect", contenu="Filtrer par contenu")
+@app_commands.autocomplete(classe=autocomplete_classe, aspect=autocomplete_aspect_for_class, contenu=autocomplete_contenu)
 async def build_get(
     interaction: discord.Interaction,
     classe: Optional[str] = None,
@@ -236,12 +317,9 @@ async def build_get(
 
     query = "SELECT b.*, (SELECT COUNT(*) FROM votes v WHERE v.build_id = b.id) as votes FROM builds b WHERE b.guild_id = ?"
     params = [str(interaction.guild_id)]
-    if classe:
-        query += " AND b.classe = ?"; params.append(classe)
-    if aspect:
-        query += " AND b.aspect = ?"; params.append(aspect)
-    if contenu:
-        query += " AND b.contenu = ?"; params.append(contenu)
+    if classe:  query += " AND b.classe = ?";  params.append(classe)
+    if aspect:  query += " AND b.aspect = ?";  params.append(aspect)
+    if contenu: query += " AND b.contenu = ?"; params.append(contenu)
     query += " ORDER BY votes DESC, b.created_at DESC LIMIT 5"
 
     con = get_db()
@@ -249,37 +327,12 @@ async def build_get(
     con.close()
 
     if not rows:
-        await interaction.response.send_message("😕 Aucun build trouvé pour ces critères.", ephemeral=True)
+        await interaction.response.send_message("😕 Aucun build trouvé.", ephemeral=True)
         return
 
-    # Un embed par build
     embeds = [build_embed(r, r["votes"]) for r in rows]
-    # Toutes les images de tous les builds
-    all_images = []
-    for r in rows:
-        all_images.extend(json.loads(r["liens"]))
-
-    await interaction.response.send_message(f"🔍 **{len(rows)} build(s) trouvé(s)** :", embeds=embeds)
-
-    # Images en messages séparés
-    sent = []
-    for url in all_images:
-        msg = await interaction.channel.send(url)
-        sent.append(msg)
-
-    # Suppression après 5 minutes
-    async def cleanup():
-        await asyncio.sleep(DELETE_DELAY)
-        try:
-            await (await interaction.original_response()).delete()
-        except Exception:
-            pass
-        for msg in sent:
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-    asyncio.create_task(cleanup())
+    images = [url for r in rows for url in json.loads(r["liens"])]
+    await ephemeral_with_images(interaction, f"🔍 **{len(rows)} build(s) trouvé(s)** :", embeds, images)
 
 # ─── /build-list ─────────────────────────────────────────────────────────────
 
@@ -287,16 +340,16 @@ async def build_get(
 async def build_list(interaction: discord.Interaction):
     con = get_db()
     rows = con.execute(
-        "SELECT classe, contenu, COUNT(*) as nb FROM builds WHERE guild_id = ? GROUP BY classe, contenu ORDER BY classe, contenu",
+        "SELECT classe, contenu, COUNT(*) as nb FROM builds WHERE guild_id = ? GROUP BY classe, contenu ORDER BY classe",
         (str(interaction.guild_id),)
     ).fetchall()
     con.close()
 
     if not rows:
-        await interaction.response.send_message("📭 Aucun build enregistré pour l'instant.", ephemeral=True)
+        await interaction.response.send_message("📭 Aucun build enregistré.", ephemeral=True)
         return
 
-    by_class: dict[str, dict[str, int]] = {}
+    by_class: dict = {}
     for r in rows:
         by_class.setdefault(r["classe"], {})[r["contenu"]] = r["nb"]
 
@@ -305,9 +358,14 @@ async def build_list(interaction: discord.Interaction):
         if classe in by_class:
             parts = [f"`{c}` : {by_class[classe].get(c, 0)}" for c in CONTENUS if by_class[classe].get(c)]
             embed.add_field(name=f"🧙 {classe}", value=" · ".join(parts), inline=False)
-
     embed.set_footer(text=f"Total : {sum(r['nb'] for r in rows)} builds")
+
     await interaction.response.send_message(embed=embed, ephemeral=True)
+    async def cleanup():
+        await asyncio.sleep(DELETE_DELAY)
+        try: await (await interaction.original_response()).delete()
+        except: pass
+    asyncio.create_task(cleanup())
 
 # ─── /build-top ──────────────────────────────────────────────────────────────
 
@@ -323,11 +381,16 @@ async def build_top(interaction: discord.Interaction):
     con.close()
 
     if not rows:
-        await interaction.response.send_message("📭 Aucun build pour l'instant.", ephemeral=True)
+        await interaction.response.send_message("📭 Aucun build.", ephemeral=True)
         return
 
     await interaction.response.send_message("🏆 **Top builds :**",
         embeds=[build_embed(r, r["votes"]) for r in rows], ephemeral=True)
+    async def cleanup():
+        await asyncio.sleep(DELETE_DELAY)
+        try: await (await interaction.original_response()).delete()
+        except: pass
+    asyncio.create_task(cleanup())
 
 # ─── /build-vote ─────────────────────────────────────────────────────────────
 
@@ -342,7 +405,6 @@ async def build_vote(interaction: discord.Interaction, build_id: str):
         await interaction.response.send_message("❌ Build introuvable.", ephemeral=True)
         con.close()
         return
-
     existing = con.execute("SELECT 1 FROM votes WHERE build_id = ? AND user_id = ?",
                            (build_id, str(interaction.user.id))).fetchone()
     if existing:
@@ -354,6 +416,11 @@ async def build_vote(interaction: discord.Interaction, build_id: str):
     con.commit()
     con.close()
     await interaction.response.send_message(msg, ephemeral=True)
+    async def cleanup():
+        await asyncio.sleep(DELETE_DELAY)
+        try: await (await interaction.original_response()).delete()
+        except: pass
+    asyncio.create_task(cleanup())
 
 # ─── /build-delete ───────────────────────────────────────────────────────────
 
@@ -368,17 +435,21 @@ async def build_delete(interaction: discord.Interaction, build_id: str):
         await interaction.response.send_message("❌ Build introuvable.", ephemeral=True)
         con.close()
         return
-
     is_admin = interaction.user.guild_permissions.manage_messages
     if str(row["author_id"]) != str(interaction.user.id) and not is_admin:
         await interaction.response.send_message("🚫 Tu ne peux supprimer que tes propres builds.", ephemeral=True)
         con.close()
         return
-
     con.execute("DELETE FROM builds WHERE id = ?", (build_id,))
     con.commit()
     con.close()
     await interaction.response.send_message(f"🗑️ Build **{build_id}** supprimé.", ephemeral=True)
+    await update_dashboard(bot, str(interaction.guild_id))
+    async def cleanup():
+        await asyncio.sleep(DELETE_DELAY)
+        try: await (await interaction.original_response()).delete()
+        except: pass
+    asyncio.create_task(cleanup())
 
 # ─── /build-obsolete ─────────────────────────────────────────────────────────
 
@@ -393,19 +464,23 @@ async def build_obsolete(interaction: discord.Interaction, build_id: str):
         await interaction.response.send_message("❌ Build introuvable.", ephemeral=True)
         con.close()
         return
-
     is_admin = interaction.user.guild_permissions.manage_messages
     if str(row["author_id"]) != str(interaction.user.id) and not is_admin:
         await interaction.response.send_message("🚫 Action réservée à l'auteur ou un modérateur.", ephemeral=True)
         con.close()
         return
-
     new_state = 0 if row["obsolete"] else 1
     con.execute("UPDATE builds SET obsolete = ? WHERE id = ?", (new_state, build_id))
     con.commit()
     con.close()
     status = "⚠️ marqué comme obsolète" if new_state else "✅ marqué comme actif"
     await interaction.response.send_message(f"Build **{build_id}** {status}.", ephemeral=True)
+    await update_dashboard(bot, str(interaction.guild_id))
+    async def cleanup():
+        await asyncio.sleep(DELETE_DELAY)
+        try: await (await interaction.original_response()).delete()
+        except: pass
+    asyncio.create_task(cleanup())
 
 # ─── /build-random ───────────────────────────────────────────────────────────
 
@@ -420,15 +495,32 @@ async def build_random(interaction: discord.Interaction):
         (str(interaction.guild_id),)
     ).fetchone()
     con.close()
-
     if not row:
         await interaction.response.send_message("📭 Aucun build disponible.", ephemeral=True)
         return
+    images = json.loads(row["liens"])
+    await ephemeral_with_images(interaction, "🎲 **Build aléatoire :**", [build_embed(row, row["votes"])], images)
 
-    liens = json.loads(row["liens"])
-    await interaction.response.send_message("🎲 **Build aléatoire :**", embed=build_embed(row, row["votes"]), ephemeral=True)
-    for url in liens:
-        await interaction.followup.send(url, ephemeral=True)
+# ─── /dashboard-setup ────────────────────────────────────────────────────────
+
+@tree.command(name="dashboard-setup", description="Crée l'interface permanente des builds dans ce salon.")
+async def dashboard_setup(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.response.send_message("🚫 Réservé aux modérateurs.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("⚙️ Création du dashboard...", ephemeral=True)
+    embed = build_dashboard_embed(str(interaction.guild_id))
+    msg = await interaction.channel.send(embed=embed)
+
+    con = get_db()
+    con.execute(
+        "INSERT OR REPLACE INTO dashboard (guild_id, channel_id, message_id) VALUES (?,?,?)",
+        (str(interaction.guild_id), str(interaction.channel_id), str(msg.id))
+    )
+    con.commit()
+    con.close()
+    await interaction.followup.send("✅ Dashboard créé ! Il se mettra à jour automatiquement.", ephemeral=True)
 
 # ─── Lancement ───────────────────────────────────────────────────────────────
 
