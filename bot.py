@@ -363,17 +363,14 @@ async def build_images(
 # ─── /build-get ──────────────────────────────────────────────────────────────
 
 @tree.command(name="build-get", description="Recherche des builds par classe, aspect et/ou contenu.")
-@app_commands.describe(classe="Filtrer par classe", aspect="Filtrer par aspect", contenu="Filtrer par contenu")
+@app_commands.describe(classe="Classe du personnage (obligatoire)", aspect="Filtrer par aspect (optionnel)", contenu="Filtrer par contenu (optionnel)")
 @app_commands.autocomplete(classe=autocomplete_classe, aspect=autocomplete_aspect_for_class, contenu=autocomplete_contenu)
 async def build_get(
     interaction: discord.Interaction,
-    classe:  Optional[str] = None,
+    classe:  str,
     aspect:  Optional[str] = None,
     contenu: Optional[str] = None,
 ):
-    if not classe and not aspect and not contenu:
-        await interaction.response.send_message("❌ Précise au moins un critère.", ephemeral=True)
-        return
 
     query = """SELECT b.*, (SELECT COUNT(*) FROM votes v WHERE v.build_id = b.id) as votes
                FROM builds b WHERE b.guild_id = ?"""
@@ -397,7 +394,7 @@ async def build_get(
         ephemeral=True
     )
 
-    # Envoie les images en éphémère avec leurs noms
+    # Envoie toutes les images d'un build en un seul message groupé (max 10 embeds)
     labels = {
         "talents":      "🎯 Talents",
         "rubis1":       "💎 Rubis 1",
@@ -408,15 +405,19 @@ async def build_get(
 
     for r in rows:
         images = json.loads(r["images"])
-        if images:
-            await interaction.followup.send(f"🖼️ **{r['nom']}** :", ephemeral=True)
-            if isinstance(images, dict):
-                for key, label in labels.items():
-                    if key in images:
-                        await interaction.followup.send(f"**{label}**\n{images[key]}", ephemeral=True)
-            else:
-                for url in images:
-                    await interaction.followup.send(url, ephemeral=True)
+        if images and isinstance(images, dict):
+            embeds = []
+            for key, label in labels.items():
+                if key in images:
+                    e = discord.Embed(title=label, color=discord.Color.blurple())
+                    e.set_image(url=images[key])
+                    embeds.append(e)
+            if embeds:
+                await interaction.followup.send(
+                    f"🖼️ **{r['nom']}**",
+                    embeds=embeds,
+                    ephemeral=True
+                )
 
     await auto_delete(interaction)
 
