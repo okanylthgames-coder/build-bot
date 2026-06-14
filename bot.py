@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
 
 # ─── Serveur HTTP pour Render ─────────────────────────────────────────────────
 
@@ -123,7 +125,7 @@ def make_id(nom, classe, aspect, author_name):
 
 # ─── Dashboard ───────────────────────────────────────────────────────────────
 
-def build_dashboard_embed(guild_id: str) -> discord.Embed:
+def generate_dashboard_image(guild_id: str) -> BytesIO:
     con = get_db()
     rows = con.execute(
         "SELECT classe, aspect, contenu, COUNT(*) as nb FROM builds WHERE guild_id = ? AND obsolete = 0 GROUP BY classe, aspect, contenu",
@@ -132,35 +134,99 @@ def build_dashboard_embed(guild_id: str) -> discord.Embed:
     con.close()
 
     data: dict = {}
+    total = 0
     for r in rows:
         data.setdefault(r["classe"], {}).setdefault(r["aspect"], {})[r["contenu"]] = r["nb"]
+        total += r["nb"]
 
-    embed = discord.Embed(
-        title="📚 Bibliothèque de Builds — Allods Online",
-        description="Nombre de builds disponibles par classe, aspect et contenu.",
-        color=discord.Color.blurple(),
-        timestamp=datetime.utcnow()
-    )
+    # ── Dimensions ──────────────────────────────────────────────────────────
+    COLS = 3
+    CW, CH_BASE = 200, 0
+    PAD = 14
+    CARD_PAD = 12
 
-    total = 0
-    for classe in CLASSES:
-        emoji = CLASSE_EMOJIS.get(classe, "🧙")
-        lines = []
-        for aspect in CLASSE_ASPECTS[classe]:
-            pve = data.get(classe, {}).get(aspect, {}).get("PvE", 0)
-            pvp = data.get(classe, {}).get(aspect, {}).get("PvP", 0)
-            total += pve + pvp
-            if pve or pvp:
-                parts = []
-                if pve: parts.append(f"`PvE:{pve}`")
-                if pvp: parts.append(f"`PvP:{pvp}`")
-                lines.append(f"**{aspect}** — " + " ".join(parts))
-            else:
-                lines.append(f"**{aspect}** — *aucun build*")
-        embed.add_field(name=f"{emoji} {classe}", value="\n".join(lines), inline=True)
+    # Calcule la hauteur de chaque carte selon le nombre d'aspects
+    def card_height(classe):
+        return 36 + len(CLASSE_ASPECTS[classe]) * 26 + 10
 
-    embed.set_footer(text=f"Total : {total} builds actifs · Mis à jour")
-    return embed
+    rows_cards = [CLASSES[i:i+COLS] for i in range(0, len(CLASSES), COLS)]
+    row_heights = [max(card_height(c) for c in row) for row in rows_cards]
+
+    W = COLS * (CW + CARD_PAD) + PAD * 2 - CARD_PAD
+    H = PAD + 50 + PAD + sum(row_heights) + len(row_heights) * CARD_PAD + PAD
+
+    # ── Couleurs ─────────────────────────────────────────────────────────────
+    BG       = (30, 31, 34)
+    BG2      = (38, 39, 43)
+    BG3      = (52, 54, 60)
+    WHITE    = (230, 232, 235)
+    GRAY     = (120, 125, 135)
+    GREEN_BG = (25, 55, 35)
+    GREEN    = (70, 190, 110)
+    BLUE_BG  = (18, 40, 70)
+    BLUE     = (70, 140, 210)
+    BORDER   = (58, 60, 68)
+
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+
+    try:
+        font       = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+        font_bold  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
+        font_sm    = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 15)
+        font_xs    = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+    except:
+        font = font_bold = font_sm = font_title = font_xs = ImageFont.load_default()
+
+    # ── Header ───────────────────────────────────────────────────────────────
+    d.rounded_rectangle([0, 0, W, 48], radius=0, fill=BG3)
+    d.text((PAD, 10), "Bibliothèque de Builds — Allods Online", font=font_title, fill=WHITE)
+    now = datetime.utcnow().strftime("%d/%m/%Y %H:%M")
+    d.text((PAD, 28), f"{total} builds actifs · Mis à jour le {now}", font=font_sm, fill=GRAY)
+    d.line([(0, 48), (W, 48)], fill=BORDER, width=1)
+
+    # ── Cartes ───────────────────────────────────────────────────────────────
+    y_offset = 48 + PAD
+    for row_idx, row in enumerate(rows_cards):
+        row_h = row_heights[row_idx]
+        for col_idx, classe in enumerate(row):
+            cx = PAD + col_idx * (CW + CARD_PAD)
+            cy = y_offset
+            ch = card_height(classe)
+
+            # Fond carte
+            d.rounded_rectangle([cx, cy, cx+CW, cy+ch], radius=8, fill=BG2, outline=BORDER, width=1)
+            # Header carte
+            d.rounded_rectangle([cx, cy, cx+CW, cy+30], radius=8, fill=BG3)
+            d.rectangle([cx, cy+20, cx+CW, cy+30], fill=BG3)
+            d.line([(cx+1, cy+30), (cx+CW-1, cy+30)], fill=BORDER, width=1)
+            d.text((cx+10, cy+9), classe, font=font_bold, fill=WHITE)
+
+            # Aspects
+            for j, aspect in enumerate(CLASSE_ASPECTS[classe]):
+                ay = cy + 38 + j * 26
+                pve = data.get(classe, {}).get(aspect, {}).get("PvE", 0)
+                pvp = data.get(classe, {}).get(aspect, {}).get("PvP", 0)
+
+                d.text((cx+10, ay+3), aspect, font=font_sm, fill=GRAY)
+
+                # Badge PvE
+                pve_x = cx + 80
+                d.rounded_rectangle([pve_x, ay, pve_x+50, ay+18], radius=4, fill=GREEN_BG if pve > 0 else BG3)
+                d.text((pve_x+5, ay+4), f"PvE: {pve}", font=font_xs, fill=GREEN if pve > 0 else GRAY)
+
+                # Badge PvP
+                pvp_x = cx + 138
+                d.rounded_rectangle([pvp_x, ay, pvp_x+50, ay+18], radius=4, fill=BLUE_BG if pvp > 0 else BG3)
+                d.text((pvp_x+5, ay+4), f"PvP: {pvp}", font=font_xs, fill=BLUE if pvp > 0 else GRAY)
+
+        y_offset += row_h + CARD_PAD
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 async def update_dashboard(bot, guild_id: str):
     con = get_db()
@@ -173,7 +239,8 @@ async def update_dashboard(bot, guild_id: str):
         if not channel:
             return
         message = await channel.fetch_message(int(row["message_id"]))
-        await message.edit(embed=build_dashboard_embed(guild_id))
+        buf = generate_dashboard_image(guild_id)
+        await message.edit(content="", attachments=[discord.File(buf, filename="dashboard.png")], embed=None)
     except Exception as e:
         print(f"Dashboard update error: {e}")
 
@@ -593,9 +660,9 @@ async def dashboard_setup(interaction: discord.Interaction):
         await interaction.response.send_message("🚫 Réservé aux modérateurs.", ephemeral=True)
         return
 
-    embed = build_dashboard_embed(str(interaction.guild_id))
+    buf = generate_dashboard_image(str(interaction.guild_id))
     # Message public et permanent
-    msg = await interaction.channel.send(embed=embed)
+    msg = await interaction.channel.send(file=discord.File(buf, filename="dashboard.png"))
 
     con = get_db()
     con.execute(
