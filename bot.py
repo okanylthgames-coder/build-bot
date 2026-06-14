@@ -299,17 +299,17 @@ async def build_add(
 
 # ─── /build-images ───────────────────────────────────────────────────────────
 
-@tree.command(name="build-images", description="Associe des screenshots à un build sans images.")
+@tree.command(name="build-images", description="Associe les 5 screenshots obligatoires à un build sans images.")
 @app_commands.describe(
-    classe   = "Filtrer les builds sans images par classe (optionnel)",
-    aspect   = "Filtrer par aspect (optionnel)",
-    contenu  = "Filtrer par contenu (optionnel)",
-    build_id = "Build auquel associer les images",
-    image1   = "Screenshot 1",
-    image2   = "Screenshot 2 (optionnel)",
-    image3   = "Screenshot 3 (optionnel)",
-    image4   = "Screenshot 4 (optionnel)",
-    image5   = "Screenshot 5 (optionnel)",
+    classe       = "Filtrer les builds sans images par classe (optionnel)",
+    aspect       = "Filtrer par aspect (optionnel)",
+    contenu      = "Filtrer par contenu (optionnel)",
+    build_id     = "Build auquel associer les images",
+    talents      = "Screenshot de la page Talents",
+    rubis1       = "Screenshot Rubis 1",
+    rubis2       = "Screenshot Rubis 2",
+    rubis3       = "Screenshot Rubis 3",
+    statistiques = "Screenshot des Statistiques",
 )
 @app_commands.autocomplete(
     classe=autocomplete_classe,
@@ -319,15 +319,15 @@ async def build_add(
 )
 async def build_images(
     interaction: discord.Interaction,
-    build_id: str,
-    image1: discord.Attachment,
+    build_id:     str,
+    talents:      discord.Attachment,
+    rubis1:       discord.Attachment,
+    rubis2:       discord.Attachment,
+    rubis3:       discord.Attachment,
+    statistiques: discord.Attachment,
     classe:  Optional[str] = None,
     aspect:  Optional[str] = None,
     contenu: Optional[str] = None,
-    image2: Optional[discord.Attachment] = None,
-    image3: Optional[discord.Attachment] = None,
-    image4: Optional[discord.Attachment] = None,
-    image5: Optional[discord.Attachment] = None,
 ):
     con = get_db()
     row = con.execute("SELECT * FROM builds WHERE id = ? AND guild_id = ?",
@@ -337,18 +337,23 @@ async def build_images(
         con.close()
         return
 
-    # Collecte les URLs des pièces jointes
-    attachments = [a for a in [image1, image2, image3, image4, image5] if a is not None]
-    urls = [a.url for a in attachments]
+    urls = {
+        "talents":      talents.url,
+        "rubis1":       rubis1.url,
+        "rubis2":       rubis2.url,
+        "rubis3":       rubis3.url,
+        "statistiques": statistiques.url,
+    }
 
     con.execute("UPDATE builds SET images = ? WHERE id = ?", (json.dumps(urls), build_id))
     con.commit()
     con.close()
 
     embed = discord.Embed(title="🖼️ Images associées !",
-                          description=f"**{row['nom']}** — {len(urls)} image(s) enregistrée(s).",
+                          description=f"**{row['nom']}** — 5 screenshots enregistrés.",
                           color=discord.Color.green())
     embed.add_field(name="🆔 ID", value=f"`{build_id}`", inline=False)
+    embed.add_field(name="✅ Images", value="Talents · Rubis 1 · Rubis 2 · Rubis 3 · Statistiques", inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
     await auto_delete(interaction)
@@ -390,16 +395,25 @@ async def build_get(
         ephemeral=True
     )
 
-    # Envoie les images en éphémère
+    # Envoie les images en éphémère avec leurs noms
+    labels = {
+        "talents":      "🎯 Talents",
+        "rubis1":       "💎 Rubis 1",
+        "rubis2":       "💎 Rubis 2",
+        "rubis3":       "💎 Rubis 3",
+        "statistiques": "📊 Statistiques",
+    }
     for r in rows:
         images = json.loads(r["images"])
         if images:
-            await interaction.followup.send(
-                f"🖼️ Images — **{r['nom']}** :",
-                ephemeral=True
-            )
-            for url in images:
-                await interaction.followup.send(url, ephemeral=True)
+            await interaction.followup.send(f"🖼️ **{r['nom']}** :", ephemeral=True)
+            if isinstance(images, dict):
+                for key, label in labels.items():
+                    if key in images:
+                        await interaction.followup.send(f"**{label}**\n{images[key]}", ephemeral=True)
+            else:
+                for url in images:
+                    await interaction.followup.send(url, ephemeral=True)
 
     await auto_delete(interaction)
 
