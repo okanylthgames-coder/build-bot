@@ -141,13 +141,13 @@ def generate_dashboard_image(guild_id: str) -> BytesIO:
 
     # ── Dimensions ──────────────────────────────────────────────────────────
     COLS = 3
-    CW, CH_BASE = 200, 0
-    PAD = 14
-    CARD_PAD = 12
+    CW, CH_BASE = 320, 0
+    PAD = 22
+    CARD_PAD = 18
 
     # Calcule la hauteur de chaque carte selon le nombre d'aspects
     def card_height(classe):
-        return 36 + len(CLASSE_ASPECTS[classe]) * 26 + 10
+        return 50 + len(CLASSE_ASPECTS[classe]) * 38 + 14
 
     rows_cards = [CLASSES[i:i+COLS] for i in range(0, len(CLASSES), COLS)]
     row_heights = [max(card_height(c) for c in row) for row in rows_cards]
@@ -171,23 +171,23 @@ def generate_dashboard_image(guild_id: str) -> BytesIO:
     d = ImageDraw.Draw(img)
 
     try:
-        font       = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
-        font_bold  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
-        font_sm    = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 15)
-        font_xs    = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+        font       = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        font_bold  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        font_sm    = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+        font_xs    = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
     except:
         font = font_bold = font_sm = font_title = font_xs = ImageFont.load_default()
 
     # ── Header ───────────────────────────────────────────────────────────────
-    d.rounded_rectangle([0, 0, W, 48], radius=0, fill=BG3)
-    d.text((PAD, 10), "Bibliothèque de Builds — Allods Online", font=font_title, fill=WHITE)
+    d.rounded_rectangle([0, 0, W, 64], radius=0, fill=BG3)
+    d.text((PAD, 12), "Bibliothèque de Builds — Allods Online", font=font_title, fill=WHITE)
     now = datetime.utcnow().strftime("%d/%m/%Y %H:%M")
-    d.text((PAD, 28), f"{total} builds actifs · Mis à jour le {now}", font=font_sm, fill=GRAY)
-    d.line([(0, 48), (W, 48)], fill=BORDER, width=1)
+    d.text((PAD, 38), f"{total} builds actifs · Mis à jour le {now}", font=font_sm, fill=GRAY)
+    d.line([(0, 64), (W, 64)], fill=BORDER, width=1)
 
     # ── Cartes ───────────────────────────────────────────────────────────────
-    y_offset = 48 + PAD
+    y_offset = 64 + PAD
     for row_idx, row in enumerate(rows_cards):
         row_h = row_heights[row_idx]
         for col_idx, classe in enumerate(row):
@@ -196,30 +196,30 @@ def generate_dashboard_image(guild_id: str) -> BytesIO:
             ch = card_height(classe)
 
             # Fond carte
-            d.rounded_rectangle([cx, cy, cx+CW, cy+ch], radius=8, fill=BG2, outline=BORDER, width=1)
+            d.rounded_rectangle([cx, cy, cx+CW, cy+ch], radius=10, fill=BG2, outline=BORDER, width=1)
             # Header carte
-            d.rounded_rectangle([cx, cy, cx+CW, cy+30], radius=8, fill=BG3)
-            d.rectangle([cx, cy+20, cx+CW, cy+30], fill=BG3)
-            d.line([(cx+1, cy+30), (cx+CW-1, cy+30)], fill=BORDER, width=1)
-            d.text((cx+10, cy+9), classe, font=font_bold, fill=WHITE)
+            d.rounded_rectangle([cx, cy, cx+CW, cy+42], radius=10, fill=BG3)
+            d.rectangle([cx, cy+28, cx+CW, cy+42], fill=BG3)
+            d.line([(cx+1, cy+42), (cx+CW-1, cy+42)], fill=BORDER, width=1)
+            d.text((cx+14, cy+12), classe, font=font_bold, fill=WHITE)
 
             # Aspects
             for j, aspect in enumerate(CLASSE_ASPECTS[classe]):
-                ay = cy + 38 + j * 26
+                ay = cy + 52 + j * 38
                 pve = data.get(classe, {}).get(aspect, {}).get("PvE", 0)
                 pvp = data.get(classe, {}).get(aspect, {}).get("PvP", 0)
 
-                d.text((cx+10, ay+3), aspect, font=font_sm, fill=GRAY)
+                d.text((cx+14, ay+5), aspect, font=font_sm, fill=GRAY)
 
                 # Badge PvE
-                pve_x = cx + 80
-                d.rounded_rectangle([pve_x, ay, pve_x+50, ay+18], radius=4, fill=GREEN_BG if pve > 0 else BG3)
-                d.text((pve_x+5, ay+4), f"PvE: {pve}", font=font_xs, fill=GREEN if pve > 0 else GRAY)
+                pve_x = cx + 120
+                d.rounded_rectangle([pve_x, ay+2, pve_x+80, ay+26], radius=6, fill=GREEN_BG if pve > 0 else BG3)
+                d.text((pve_x+8, ay+6), f"PvE: {pve}", font=font_xs, fill=GREEN if pve > 0 else GRAY)
 
                 # Badge PvP
-                pvp_x = cx + 138
-                d.rounded_rectangle([pvp_x, ay, pvp_x+50, ay+18], radius=4, fill=BLUE_BG if pvp > 0 else BG3)
-                d.text((pvp_x+5, ay+4), f"PvP: {pvp}", font=font_xs, fill=BLUE if pvp > 0 else GRAY)
+                pvp_x = cx + 210
+                d.rounded_rectangle([pvp_x, ay+2, pvp_x+80, ay+26], radius=6, fill=BLUE_BG if pvp > 0 else BG3)
+                d.text((pvp_x+8, ay+6), f"PvP: {pvp}", font=font_xs, fill=BLUE if pvp > 0 else GRAY)
 
         y_offset += row_h + CARD_PAD
 
