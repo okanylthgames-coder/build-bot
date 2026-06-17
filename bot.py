@@ -208,6 +208,55 @@ def generate_dashboard_image(guild_id: str) -> BytesIO:
 
 # ─── Mise à jour dashboard ────────────────────────────────────────────────────
 
+def build_dashboard_embeds(guild_id: str) -> list:
+    con = get_db()
+    rows = con.execute(
+        "SELECT classe, aspect, contenu, COUNT(*) as nb FROM builds WHERE guild_id = ? GROUP BY classe, aspect, contenu",
+        (guild_id,)
+    ).fetchall()
+    total_row = con.execute("SELECT COUNT(*) as nb FROM builds WHERE guild_id = ?", (guild_id,)).fetchone()
+    con.close()
+
+    data: dict = {}
+    for r in rows:
+        data.setdefault(r["classe"], {}).setdefault(r["aspect"], {})[r["contenu"]] = r["nb"]
+    total = total_row["nb"] if total_row else 0
+    now = datetime.utcnow().strftime("%d/%m/%Y %H:%M")
+
+    # Embed header
+    header = discord.Embed(
+        title="📚 Bibliothèque de Builds — Allods Online",
+        description=f"**{total}** builds actifs · Mis à jour le {now}",
+        color=discord.Color.blurple()
+    )
+
+    # Un embed par ligne de 3 classes (max 10 embeds Discord par message)
+    COLS = 3
+    rows_classes = [CLASSES[i:i+COLS] for i in range(0, len(CLASSES), COLS)]
+    embeds = [header]
+
+    for row in rows_classes:
+        embed = discord.Embed(color=discord.Color.blurple())
+        for classe in row:
+            emoji = CLASSE_EMOJIS.get(classe, "🧙")
+            lines = []
+            for k, asp in enumerate(CLASSE_ASPECTS[classe]):
+                pve = data.get(classe, {}).get(asp, {}).get("PvE", 0)
+                pvp = data.get(classe, {}).get(asp, {}).get("PvP", 0)
+                pve_str = f"🟢`PvE:{pve}`" if pve > 0 else f"`PvE:0`"
+                pvp_str = f"🔵`PvP:{pvp}`" if pvp > 0 else f"`PvP:0`"
+                # Ligne alternée simulée avec tiret
+                prefix = "▸" if k % 2 == 0 else "▹"
+                lines.append(f"{prefix} **{asp}** {pve_str} {pvp_str}")
+            embed.add_field(
+                name=f"{emoji} {classe}",
+                value="\n".join(lines),
+                inline=True
+            )
+        embeds.append(embed)
+
+    return embeds
+
 async def update_dashboard(bot, guild_id: str):
     con = get_db()
     row = con.execute("SELECT * FROM dashboard WHERE guild_id = ?", (guild_id,)).fetchone()
@@ -218,15 +267,10 @@ async def update_dashboard(bot, guild_id: str):
         channel = bot.get_channel(int(row["channel_id"]))
         if not channel:
             return
-        old_msg = await channel.fetch_message(int(row["message_id"]))
-        await old_msg.delete()
-        buf = generate_dashboard_image(guild_id)
+        message = await channel.fetch_message(int(row["message_id"]))
+        embeds = build_dashboard_embeds(guild_id)
         view = DashboardView(guild_id)
-        new_msg = await channel.send(file=discord.File(buf, filename="dashboard.png"), view=view)
-        con = get_db()
-        con.execute("UPDATE dashboard SET message_id = ? WHERE guild_id = ?", (str(new_msg.id), guild_id))
-        con.commit()
-        con.close()
+        await message.edit(embeds=embeds, view=view)
     except Exception as e:
         print(f"Dashboard update error: {e}")
 
@@ -605,9 +649,9 @@ async def dashboard_setup(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_messages:
         await interaction.response.send_message("🚫 Réservé aux modérateurs.", ephemeral=True); return
 
-    buf = generate_dashboard_image(str(interaction.guild_id))
+    embeds = build_dashboard_embeds(str(interaction.guild_id))
     view = DashboardView(str(interaction.guild_id))
-    msg = await interaction.channel.send(file=discord.File(buf, filename="dashboard.png"), view=view)
+    msg = await interaction.channel.send(embeds=embeds, view=view)
 
     con = get_db()
     con.execute("INSERT OR REPLACE INTO dashboard (guild_id, channel_id, message_id) VALUES (?,?,?)",
